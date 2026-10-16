@@ -1,0 +1,18 @@
+# Build output
+build/
+Debug/
+Release/
+
+# Optional: VS Code local config
+.vscode/
+
+# Compiler output
+*.o
+*.d
+*.elf
+*.bin
+*.hex
+*.map
+
+mx.scratch
+!.settings
