@@ -67,7 +67,7 @@ void Error_Handler(void);
 #define LED_B_GPIO_Port GPIOF
 
 /* USER CODE BEGIN Private defines */
-
+void JumpToApplication(uint32_t appAddress);
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

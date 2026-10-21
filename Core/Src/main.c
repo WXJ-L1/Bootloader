@@ -18,13 +18,14 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include <string.h>
 #include "usart.h"
 #include "gpio.h"
-#include "flash.h"
+
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "boot.h"
+#include "flash.h"
+#include "iap.h"
+#include "firmware.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -34,7 +35,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+uint8_t rx_data;
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -58,14 +59,21 @@ void SystemClock_Config(void);
 /* USER CODE BEGIN 0 */
 void JumpToApplication(uint32_t appAddress)
 {
-  // 检查应用程序的堆栈指针是否有效(即是否在 SRAM 的范围内)
-  if(((*(__IO uint32_t*)appAddress) & 0x2FFE0000) == 0x20000000)
+  const uint32_t app_sp = *(__IO uint32_t*)appAddress;
+  const uint32_t app_entry = *(__IO uint32_t*)(appAddress + 4U);
+  const uint32_t sram_start = SRAM_BASE;
+  const uint32_t sram_end = SRAM_BASE + (128U * 1024U);
+
+  /* 查一下什么意思 */
+  if ((app_sp >= sram_start) && (app_sp <= sram_end) &&
+      ((app_sp & 0x7U) == 0U) &&
+      ((app_entry & 1U) != 0U) &&
+      ((app_entry & ~1U) >= APP_ADDRESS) &&
+      ((app_entry & ~1U) < (APP_ADDRESS + APP_SIZE)))
   {
     // 定义一个函数指针类型，用于指向应用程序的复位处理程序
     typedef void (*pFunction)(void);
 
-    uint32_t app_sp = *(__IO uint32_t*)appAddress; // 获取应用程序的堆栈指针
-    uint32_t app_entry = *(__IO uint32_t*)(appAddress + 4); // 获取应用程序的复位处理程序地址
     // 设置函数指针指向应用程序的复位处理程序
     pFunction app_reset_handler = (pFunction)app_entry;
     // 关闭中断 关闭 SysTick 定时器
@@ -73,78 +81,104 @@ void JumpToApplication(uint32_t appAddress)
     SysTick->CTRL = 0; // 禁用 SysTick 定时器
     SysTick->LOAD = 0;
     SysTick->VAL = 0;
+
+    UART1_SendString("Valid application found!\r\n");
+    // char txBuf[100];
+
+    // snprintf(txBuf, sizeof(txBuf),
+    //      "APP SP: 0x%08lX\r\nAPP Entry: 0x%08lX\r\n",
+    //      (unsigned long)app_sp,
+    //      (unsigned long)app_entry);
+
+    // UART1_SendString(txBuf);  
     // 设置向量表偏移寄存器为应用程序的起始地址
     SCB->VTOR = appAddress;
     __set_MSP(app_sp); // 设置主堆栈指针
-
+    
     app_reset_handler(); // 跳转到应用程序的复位处理程序
-
-    return;
   }
+  else
+  {
+    UART1_SendString("No valid application found!\r\n");
+  }
+
 }
 
-HAL_StatusTypeDef CopyFirmware(void)
-{
-  uint32_t src_addr = UPGRADE_START_ADDR;
-  uint32_t size = UPGRADE_SIZE;
+/* 检查升级标志 */
+uint8_t CheckUpgradeFlag(void) {
+    uint32_t flag = *(__IO uint32_t*)UPGRADE_FLAG_ADDRESS;
+    return (flag == UPGRADE_FLAG_VALUE);
+}
+
+/* 清除升级标志 */
+void ClearUpgradeFlag(void) {
+    HAL_FLASH_Unlock();
+    //HAL_FLASHEx_Erase(&eraseInit, &sectorError);
+    HAL_FLASH_Lock();
+}
+
+// HAL_StatusTypeDef CopyFirmware(void)
+// {
+//   uint32_t src_addr = UPGRADE_START_ADDR;
+//   uint32_t size = UPGRADE_SIZE;
   
-  uint32_t dest_addr = APP_START_ADDR;
+//   uint32_t dest_addr = APP_ADDRESS;
 
-  FLASH_EraseInitTypeDef eraseInit = {0};
-  uint32_t sectorError = 0xFFFFFFFFU;
-  HAL_StatusTypeDef status = HAL_OK;
+//   FLASH_EraseInitTypeDef eraseInit = {0};
+//   uint32_t sectorError = 0xFFFFFFFFU;
+//   HAL_StatusTypeDef status = HAL_OK;
 
-  HAL_FLASH_Unlock();
-  // 配置擦除应用区
-  eraseInit.TypeErase = FLASH_TYPEERASE_SECTORS;
-  eraseInit.VoltageRange = FLASH_VOLTAGE_RANGE_3;
-  eraseInit.Sector = FLASH_SECTOR_2;
-  eraseInit.NbSectors = 6;  // 扇区2~7
+//   HAL_FLASH_Unlock();
+//   // 配置擦除应用区
+//   eraseInit.TypeErase = FLASH_TYPEERASE_SECTORS;
+//   eraseInit.VoltageRange = FLASH_VOLTAGE_RANGE_3;
+//   eraseInit.Sector = FLASH_SECTOR_2;
+//   eraseInit.NbSectors = 6;  // 扇区2~7
 
-  // 一次性擦除
-  if (HAL_FLASHEx_Erase(&eraseInit, &sectorError) != HAL_OK)
-  {
-    UART1_SendString("Erase app area failed!\r\n");
-    status = HAL_ERROR;
-    goto cleanup;
-  }
+//   // 一次性擦除
+//   if (HAL_FLASHEx_Erase(&eraseInit, &sectorError) != HAL_OK)
+//   {
+//     UART1_SendString("Erase app area failed!\r\n");
+//     status = HAL_ERROR;
+//     goto cleanup;
+//   }
 
-  // 按32位复制固件
-  for (uint32_t i = 0; i < size; i += 4U)
-  {
-    uint32_t data;
-    // 从升级区读取32位数据
-    memcpy(&data, (const void *)(src_addr + i), sizeof(data));
-    // 写入应用区
-    if (HAL_FLASH_Program(
-        FLASH_TYPEPROGRAM_WORD,
-        dest_addr + i,
-        data) != HAL_OK)
-    {
-      UART1_SendString("Write app area failed!\r\n");
-      status = HAL_ERROR;
-      goto cleanup;
-    }
+//   // 按32位复制固件
+//   for (uint32_t i = 0; i < size; i += 4U)
+//   {
+//     uint32_t data;
+//     // 从升级区读取32位数据
+//     memcpy(&data, (const void *)(src_addr + i), sizeof(data));
+//     // 写入应用区
+//     if (HAL_FLASH_Program(
+//         FLASH_TYPEPROGRAM_WORD,
+//         dest_addr + i,
+//         data) != HAL_OK)
+//     {
+//       UART1_SendString("Write app area failed!\r\n");
+//       status = HAL_ERROR;
+//       goto cleanup;
+//     }
 
-    // 每复制256字节翻转一次LED
-    if ((i % 256U) == 0U)
-    {
-      HAL_GPIO_TogglePin(GPIOF, LED_R_Pin);
-    }
-  }
-  cleanup:
-    // 无论成功失败，都重新锁定Flash
-    if (HAL_FLASH_Lock() != HAL_OK)
-    {
-        status = HAL_ERROR;
-    }
+//     // 每复制256字节翻转一次LED
+//     if ((i % 256U) == 0U)
+//     {
+//       HAL_GPIO_TogglePin(GPIOF, LED_R_Pin);
+//     }
+//   }
+//   cleanup:
+//     // 无论成功失败，都重新锁定Flash
+//     if (HAL_FLASH_Lock() != HAL_OK)
+//     {
+//         status = HAL_ERROR;
+//     }
 
-    if (status == HAL_OK)
-    {
-        UART1_SendString("Firmware copy complete!\r\n");
-    }
-    return status;
-}
+//     if (status == HAL_OK)
+//     {
+//         UART1_SendString("Firmware copy complete!\r\n");
+//     }
+//     return status;
+// }
 
 /* USER CODE END 0 */
 
@@ -178,66 +212,78 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USART1_UART_Init();
-  /* USER CODE BEGIN 2 */
-  for (int i = 0; i < 2; i++)
-  {
-    //HAL_GPIO_TogglePin(GPIOF, LED_G_Pin);
-    HAL_GPIO_WritePin(GPIOF, LED_R_Pin, GPIO_PIN_SET);
-    HAL_Delay(500);
-    HAL_GPIO_WritePin(GPIOF, LED_R_Pin, GPIO_PIN_RESET);
-    HAL_Delay(500);
-  }
 
+  /* USER CODE BEGIN 2 */
+  
   uint8_t need_upgrade = 0;
   /* 按键检查是否需要升级 */
   if (KEY_PRESSED())
   {
     need_upgrade = 1;
   }
-  /* 进入升级模式 */ 
+
   if(need_upgrade)
   {
-    /* 按键升级亮绿灯 */
-    HAL_GPIO_WritePin(GPIOF, LED_G_Pin, GPIO_PIN_RESET);
+    //ClearUpgradeFlag();
+    /* 进入IAP升级模式 */
+    IAP_Init();
 
-    while(1)
-    {
-      /* 等待命令，接收一个字节 */
-      uint8_t cmd = UART1_ReceiveByte(HAL_MAX_DELAY);
+    HAL_UART_Receive_IT(&huart1, &rx_data, 1);
 
-      switch(cmd)
+    uint32_t led_tick = HAL_GetTick();
+
+    while(1){
+      // 非阻塞LED闪烁
+      if (HAL_GetTick() - led_tick >= 500) {
+        led_tick = HAL_GetTick();
+        HAL_GPIO_TogglePin(GPIOF, LED_G_Pin);
+      }
+
+      /* 主循环处理完整数据包 */
+      if (rx_packet_ready)
       {
-        case'1':
-        /* 下载固件到升级缓冲区 */
-          FirmwareDownload();
-          /* 复制固件到应用区 */
-          if(CopyFirmware() == HAL_OK)
-          {
-            HAL_Delay(1000);
-            /* 重启 */
-            NVIC_SystemReset();
-          }
-          else
-          {
-            break;
-          }
+        IAP_Packet_t packet;
+        /* 校验数据包是否正确 [注：验证数据CRC]*/
+        if (IAP_ParsePacket(rx_buffer, rx_index, &packet)){
+          /* 根据命令分发任务状态机 
+           * [注：根据当前状态和接收到的事件，执行对应操作，并决定是否切换到下一个状态]
+           * 有限状态机（FSM） 状态（State）、事件（Event）、状态转移（Transition）
+          */
+          IAP_ProcessPacket(&packet);
+        }
+        else{
+          IAP_SendResponse(rx_buffer[1], RESP_CRC_ERROR);
+        }
+        rx_index = 0;
+        rx_packet_ready = 0;
+      }
 
-        case '2':
-          /* 跳转到应用程序 */ 
-          JumpToApplication(APP_START_ADDR);
-          break;
-
-        case '3':
-          HAL_Delay(100);
-          NVIC_SystemReset();
-          break;
-
-        default:
-          HAL_GPIO_TogglePin(GPIOF, LED_R_Pin);
-          break;
+      if(iap_info.state == IAP_STATE_COMPLETE)
+      {
+        HAL_Delay(1000);
+        JumpToApplication(APP_ADDRESS);
       }
     }
   }
+
+  UART1_SendString("Checking application...\r\n");
+
+  uint32_t app_sp = *(__IO uint32_t*)APP_ADDRESS;
+  if ((app_sp & 0x2FFE0000) == 0x20000000) {
+    UART1_SendString("Valid application found\r\n");
+    HAL_Delay(500);
+    JumpToApplication(APP_ADDRESS);
+  } 
+  else {
+    UART1_SendString("No valid application, waiting for upgrade\r\n");
+    /* 进入IAP升级模式 */
+    IAP_Init();
+    while (1) {
+      HAL_GPIO_TogglePin(GPIOF, LED_R_Pin);
+      HAL_Delay(500);
+    }
+  }
+
 
   /* USER CODE END 2 */
 
@@ -299,7 +345,15 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART1)
+    {
+        UART_RxCallback(rx_data);
 
+        HAL_UART_Receive_IT(&huart1, &rx_data, 1);
+    }
+}
 /* USER CODE END 4 */
 
 /**

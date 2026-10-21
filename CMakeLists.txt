@@ -33,8 +33,10 @@ enable_language(C ASM)
 
 # Create an executable object type
 add_executable(${CMAKE_PROJECT_NAME}
-    Core/Src/boot.c
-    Core/Inc/boot.h)
+    Core/Inc/firmware.h
+    Core/Src/firmware.c
+    Core/Src/iap.c
+    Core/Inc/iap.h)
 
 # Add STM32CubeMX generated sources
 add_subdirectory(cmake/stm32cubemx)
