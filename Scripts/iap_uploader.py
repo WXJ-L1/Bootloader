@@ -2,7 +2,10 @@ import serial
 import struct
 import time
 import sys
+<<<<<<< HEAD
 from pathlib import Path
+=======
+>>>>>>> 79ab045 (APP)
 
 # 命令定义
 CMD_START_UPGRADE = 0x01
@@ -18,6 +21,7 @@ RESP_CRC_ERROR = 0x02
 # 数据包格式
 PACKET_SOF = 0xAA
 PACKET_EOF = 0x55
+<<<<<<< HEAD
 DEFAULT_FIRMWARE = Path(r"D:\STM32F407\LCD\build\Debug\LCD.bin")
 CHUNK_SIZE = 1024
 
@@ -26,6 +30,12 @@ class IAPUploader:
         # 开始升级时 Bootloader 会擦除目标 Bank 的 3 个 Flash 扇区，
         # 擦除完成后才返回响应。3 秒在某些芯片/供电条件下不够。
         self.ser = serial.Serial(port, baudrate, timeout=12)
+=======
+
+class IAPUploader:
+    def __init__(self, port, baudrate=115200):
+        self.ser = serial.Serial(port, baudrate, timeout=2)
+>>>>>>> 79ab045 (APP)
 
     def crc16(self, data):
         """计算CRC16"""
@@ -88,6 +98,7 @@ class IAPUploader:
         crc_bytes = self.ser.read(2)
         eof = self.ser.read(1)
 
+<<<<<<< HEAD
         if len(data) != length or len(crc_bytes) != 2:
             return None
         if len(eof) == 0 or eof[0] != PACKET_EOF:
@@ -139,6 +150,19 @@ class IAPUploader:
             firmware = f.read()
 
         print(f"Firmware file: {firmware_path}")
+=======
+        if len(eof) == 0 or eof[0] != PACKET_EOF:
+            return None
+
+        return {'cmd': cmd, 'data': data}
+
+    def upload_firmware(self, firmware_path):
+        """上传固件"""
+        # 读取固件文件
+        with open(firmware_path, 'rb') as f:
+            firmware = f.read()
+
+>>>>>>> 79ab045 (APP)
         print(f"Firmware size: {len(firmware)} bytes")
 
         # 计算CRC32
@@ -146,6 +170,7 @@ class IAPUploader:
         print(f"Firmware CRC32: 0x{crc32:08X}")
 
         # 发送开始升级命令
+<<<<<<< HEAD
         print("Waiting for Bootloader to be ready...")
         time.sleep(2.2)
         self.ser.reset_input_buffer()
@@ -153,11 +178,25 @@ class IAPUploader:
         start_data = struct.pack('<II', len(firmware), crc32)
         # START 会触发整块 Bank 擦除，允许更长时间完成。
         self.send_and_wait(CMD_START_UPGRADE, start_data, retries=1)
+=======
+        print("Sending start upgrade command...")
+        start_data = struct.pack('<II', len(firmware), crc32)
+        self.send_packet(CMD_START_UPGRADE, start_data)
+
+        response = self.receive_response()
+        if response is None or response['data'][0] != RESP_OK:
+            print("Start upgrade failed!")
+            return False
+>>>>>>> 79ab045 (APP)
 
         print("Start upgrade OK")
 
         # 分包发送固件数据
+<<<<<<< HEAD
         chunk_size = CHUNK_SIZE
+=======
+        chunk_size = 1024
+>>>>>>> 79ab045 (APP)
         total_chunks = (len(firmware) + chunk_size - 1) // chunk_size
 
         for i in range(total_chunks):
@@ -165,10 +204,18 @@ class IAPUploader:
             end = min(start + chunk_size, len(firmware))
             chunk = firmware[start:end]
 
+<<<<<<< HEAD
             try:
                 self.send_and_wait(CMD_SEND_DATA, chunk, retries=1)
             except RuntimeError as exc:
                 print(f"Send data failed at chunk {i}: {exc}")
+=======
+            self.send_packet(CMD_SEND_DATA, chunk)
+
+            response = self.receive_response()
+            if response is None or response['data'][0] != RESP_OK:
+                print(f"Send data failed at chunk {i}")
+>>>>>>> 79ab045 (APP)
                 return False
 
             progress = (i + 1) * 100 // total_chunks
@@ -178,26 +225,39 @@ class IAPUploader:
 
         # 发送结束升级命令
         print("Sending end upgrade command...")
+<<<<<<< HEAD
         try:
             self.send_and_wait(CMD_END_UPGRADE, retries=1)
         except RuntimeError as exc:
             print(f"End upgrade failed: {exc}")
+=======
+        self.send_packet(CMD_END_UPGRADE)
+
+        response = self.receive_response()
+        if response is None or response['data'][0] != RESP_OK:
+            print("End upgrade failed!")
+>>>>>>> 79ab045 (APP)
             return False
 
         print("Upgrade complete!")
 
         # 发送跳转命令
         print("Sending jump to app command...")
+<<<<<<< HEAD
         try:
             self.send_and_wait(CMD_JUMP_TO_APP, retries=1)
         except RuntimeError as exc:
             print(f"Jump to app failed: {exc}")
             return False
+=======
+        self.send_packet(CMD_JUMP_TO_APP)
+>>>>>>> 79ab045 (APP)
 
         return True
 
 # 使用示例
 if __name__ == '__main__':
+<<<<<<< HEAD
     if len(sys.argv) not in (2, 3):
         print("Usage: python iap_uploader.py <COM_PORT> [FIRMWARE_FILE]")
         print(f"Default firmware: {DEFAULT_FIRMWARE}")
@@ -220,3 +280,18 @@ if __name__ == '__main__':
     finally:
         if uploader is not None:
             uploader.ser.close()
+=======
+    if len(sys.argv) != 3:
+        print("Usage: python iap_uploader.py <COM_PORT> <FIRMWARE_FILE>")
+        sys.exit(1)
+
+    port = sys.argv[1]
+    firmware_file = sys.argv[2]
+
+    uploader = IAPUploader(port)
+
+    if uploader.upload_firmware(firmware_file):
+        print("Firmware upload successful!")
+    else:
+        print("Firmware upload failed!")
+>>>>>>> 79ab045 (APP)
