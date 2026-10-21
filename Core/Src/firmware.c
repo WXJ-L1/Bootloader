@@ -85,7 +85,7 @@ uint8_t IAP_ParsePacket(uint8_t *buffer, uint16_t length, IAP_Packet_t *packet) 
     /* 提取CRC16值 */ 
     packet->crc = buffer[4 + packet->len] | (buffer[5 + packet->len] << 8);
     packet->eof = buffer[6 + packet->len];
-    /* 验证CRC [注：计算CRC时不包括SOF和EOF] */ 
+    /* 验证固件的完整性 [注：计算CRC时不包括SOF和EOF] */ 
     uint16_t calculated_crc = CRC16_Calculate(&buffer[1], packet->len + 3);
     if (calculated_crc != packet->crc) {
         return 0; 

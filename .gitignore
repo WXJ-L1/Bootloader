@@ -5,6 +5,7 @@ Release/
 
 # Optional: VS Code local config
 .vscode/
+.venv
 
 # Compiler output
 *.o

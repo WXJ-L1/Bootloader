@@ -23,6 +23,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdio.h>
 #include "flash.h"
 #include "iap.h"
 #include "firmware.h"
@@ -214,7 +215,7 @@ int main(void)
   MX_USART1_UART_Init();
 
   /* USER CODE BEGIN 2 */
-  
+
   uint8_t need_upgrade = 0;
   /* 按键检查是否需要升级 */
   if (KEY_PRESSED())
@@ -227,11 +228,10 @@ int main(void)
     //ClearUpgradeFlag();
     /* 进入IAP升级模式 */
     IAP_Init();
-
+    /* 串口中断接收一个字节 */
     HAL_UART_Receive_IT(&huart1, &rx_data, 1);
 
     uint32_t led_tick = HAL_GetTick();
-
     while(1){
       // 非阻塞LED闪烁
       if (HAL_GetTick() - led_tick >= 500) {
@@ -265,11 +265,22 @@ int main(void)
       }
     }
   }
-
+  HAL_Delay(2000);
   UART1_SendString("Checking application...\r\n");
 
   uint32_t app_sp = *(__IO uint32_t*)APP_ADDRESS;
-  if ((app_sp & 0x2FFE0000) == 0x20000000) {
+  uint32_t app_entry = *(volatile uint32_t *)(APP_ADDRESS + 4U);
+  // char buffer[64];
+  // snprintf(buffer, sizeof(buffer),
+  //        "App SP: 0x%08lX\r\n", (unsigned long)app_sp);
+  // UART1_SendString(buffer);
+  // snprintf(buffer, sizeof(buffer),
+  //        "App Reset: 0x%08lX\r\n", (unsigned long)app_reset);
+  // UART1_SendString(buffer);
+
+  uint32_t sram_start = 0x20000000U;
+  uint32_t sram_end = 0x20020000U;
+  if ((app_sp >= sram_start) && (app_sp <= sram_end) && ((app_sp & 0x7U) == 0U) && ((app_entry & 1U) != 0U) && ((app_entry & ~1U) >= APP_ADDRESS) && ((app_entry & ~1U) < (APP_ADDRESS + APP_SIZE))){
     UART1_SendString("Valid application found\r\n");
     HAL_Delay(500);
     JumpToApplication(APP_ADDRESS);
