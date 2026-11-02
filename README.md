@@ -2,9 +2,6 @@
 # Bootloader
 =======
 # STM32F407 UART IAP Web 升级控制台
-
-本项目在现有 Bootloader 协议之上增加本机 Flask Web 界面，不修改 STM32 端代码。后端复用协议常量和 CRC 算法，严格按 `START → SEND_DATA(每包等待 ACK) → END → JUMP` 执行；只有 END 返回 `RESP_OK` 才判定升级成功，JUMP 结果单独显示。
-
 ## 目录
 
 ```text
@@ -21,10 +18,10 @@ requirements.txt
 ## Windows PowerShell 启动
 
 ```powershell
-py -m venv .venv
+python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-py -m pip install -r requirements.txt
-py run_web.py
+python -m pip install -r requirements.txt
+python run_web.py
 ```
 
 然后访问 http://127.0.0.1:5000 。固件大小上限与 `Core/Src/iap.c` 当前检查一致，为 `0x70000`（448 KiB）。如果未来调整 STM32 端分区或上限，请同步修改 `webapp/protocol.py` 的 `MAX_FIRMWARE_SIZE`。
