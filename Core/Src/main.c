@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "dma.h"
 #include "usart.h"
 #include "gpio.h"
 
@@ -25,8 +26,10 @@
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include "flash.h"
-#include "iap.h"
-#include "firmware.h"
+
+#include "bsp_esp8266.h"
+#include "bsp_firmware.h"
+#include "bsp_iap.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -37,6 +40,9 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 uint8_t rx_data;
+/* 串口3DMA接收缓冲区 */
+#define ESP_RX_SIZE 256
+uint8_t esp_rx_buffer[ESP_RX_SIZE];
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -212,9 +218,13 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_USART1_UART_Init();
-
+  MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
+  //HAL_UARTEx_ReceiveToIdle_DMA(&huart3,esp_rx_buffer,ESP_RX_SIZE);
+  HAL_Delay(2000);
+  //ESP8266_Init();
 
   uint8_t need_upgrade = 0;
   /* 按键检查是否需要升级 */
@@ -226,29 +236,27 @@ int main(void)
   if(need_upgrade)
   {
     //ClearUpgradeFlag();
-    /* 进入IAP升级模式 */
+    /* 初始化 IAP_Info_t */
     IAP_Init();
-    /* 串口中断接收一个字节 */
+    /* 串口中断接收自定义数据帧字节数据 */
     HAL_UART_Receive_IT(&huart1, &rx_data, 1);
 
     uint32_t led_tick = HAL_GetTick();
     while(1){
-      // 非阻塞LED闪烁
       if (HAL_GetTick() - led_tick >= 500) {
         led_tick = HAL_GetTick();
         HAL_GPIO_TogglePin(GPIOF, LED_G_Pin);
       }
 
-      /* 主循环处理完整数据包 */
+      /* 主循环处理 IAP_Packet_t 数据包 */
       if (rx_packet_ready)
       {
         IAP_Packet_t packet;
-        /* 校验数据包是否正确 [注：验证数据CRC]*/
+        /* CRC校验数据包是否正确 */
         if (IAP_ParsePacket(rx_buffer, rx_index, &packet)){
           /* 根据命令分发任务状态机 
            * [注：根据当前状态和接收到的事件，执行对应操作，并决定是否切换到下一个状态]
-           * 有限状态机（FSM） 状态（State）、事件（Event）、状态转移（Transition）
-          */
+           */
           IAP_ProcessPacket(&packet);
         }
         else{
@@ -265,8 +273,11 @@ int main(void)
       }
     }
   }
+
   HAL_Delay(2000);
   UART1_SendString("Checking application...\r\n");
+
+  
 
   uint32_t app_sp = *(__IO uint32_t*)APP_ADDRESS;
   uint32_t app_entry = *(volatile uint32_t *)(APP_ADDRESS + 4U);
@@ -361,9 +372,19 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     if (huart->Instance == USART1)
     {
         UART_RxCallback(rx_data);
-
         HAL_UART_Receive_IT(&huart1, &rx_data, 1);
     }
+}
+
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
+{
+  if (huart->Instance == USART3)
+  {
+    /* [注：Size是HAL库计算出的接收的数据大小] */
+    HAL_UART_Transmit(&huart1,esp_rx_buffer,Size,1000);
+    /*重新启动USART3接收 [注：ESP_RX_SIZE是最大允许接收的大小] */
+    HAL_UARTEx_ReceiveToIdle_DMA(&huart3,esp_rx_buffer,ESP_RX_SIZE);
+  }
 }
 /* USER CODE END 4 */
 

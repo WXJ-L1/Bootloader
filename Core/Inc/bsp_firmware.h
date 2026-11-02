@@ -1,5 +1,5 @@
-#ifndef __FIRMWARE_H__
-#define __FIRMWARE_H__
+#ifndef __BSP_FIRMWARE_H__
+#define __BSP_FIRMWARE_H__
 
 #ifdef __cplusplus
 extern "C" {
@@ -27,6 +27,7 @@ extern "C" {
 #define PACKET_EOF           0x55
 #define MAX_DATA_SIZE        1024
 
+/* 自定义串口固件传输数据帧 */
 typedef struct {
     uint8_t sof;                    // SOF: 帧起始标志，固定为0xAA
     uint8_t cmd;                    // CMD: 命令字
@@ -39,11 +40,12 @@ typedef struct {
 extern uint8_t rx_buffer[MAX_DATA_SIZE + 10];
 extern uint16_t rx_index;
 
-void IAP_SendResponse(uint8_t cmd, uint8_t status);
 uint16_t CRC16_Calculate(uint8_t *data, uint16_t length);
+void IAP_SendResponse(uint8_t cmd, uint8_t status);
 uint8_t IAP_ParsePacket(uint8_t *buffer, uint16_t length, IAP_Packet_t *packet);
 void UART_RxCallback(uint8_t data);
+
 #ifdef __cplusplus
 }
 #endif
-#endif /*__ FIRMWARE_H__ */
+#endif /*__ BSP_FIRMWARE_H__ */

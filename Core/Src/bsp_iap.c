@@ -1,33 +1,16 @@
-#include "iap.h"
-#include "firmware.h"
-
-#include "stm32f4xx_hal.h"
-#include "usart.h"
-#include "main.h"
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
 
+#include "main.h"
+#include "usart.h"
+#include "stm32f4xx_hal.h"
+
+#include "bsp_firmware.h"
+#include "bsp_iap.h"
+
 IAP_Info_t iap_info;
 volatile uint8_t rx_packet_ready = 0;
-
-uint32_t FLASH_GetSector(uint32_t address)
-{
-    if      (address < 0x08004000) return FLASH_SECTOR_0;
-    else if (address < 0x08008000) return FLASH_SECTOR_1;
-    else if (address < 0x0800C000) return FLASH_SECTOR_2;
-    else if (address < 0x08010000) return FLASH_SECTOR_3;
-    else if (address < 0x08020000) return FLASH_SECTOR_4;
-    else if (address < 0x08040000) return FLASH_SECTOR_5;
-    else if (address < 0x08060000) return FLASH_SECTOR_6;
-    else if (address < 0x08080000) return FLASH_SECTOR_7;
-    else if (address < 0x080A0000) return FLASH_SECTOR_8;
-    else if (address < 0x080C0000) return FLASH_SECTOR_9;
-    else if (address < 0x080E0000) return FLASH_SECTOR_10;
-    else if (address < 0x08100000) return FLASH_SECTOR_11;
-
-    return 0xFFFFFFFFU;
-}
 
 // CRC32查找表
 static const uint32_t crc32_table[256] = {
@@ -98,62 +81,69 @@ static const uint32_t crc32_table[256] = {
     0xB40BBE37, 0xC30C8EA1, 0x5A05DF1B, 0x2D02EF8D
 };
 
-// 生成CRC32查找表（初始化时调用一次）
-void CRC32_GenerateTable(uint32_t *table) {
-    for (uint32_t i = 0; i < 256; i++) {
-        uint32_t crc = i;
-        for (uint32_t j = 0; j < 8; j++) {
-            if (crc & 1) {
-                crc = (crc >> 1) ^ 0xEDB88320;
-            } else {
-                crc = crc >> 1;
-            }
-        }
-        table[i] = crc;
-    }
-}
-
 // 计算CRC32
 uint32_t CRC32_Calculate(const uint8_t *data, uint32_t length)
 {
     uint32_t crc = 0xFFFFFFFFU;
-
     for (uint32_t i = 0; i < length; i++)
     {
         crc = (crc >> 8) ^
               crc32_table[(crc ^ data[i]) & 0xFFU];
     }
-
     return crc ^ 0xFFFFFFFFU;
 }
 
+uint32_t FLASH_GetSector(uint32_t address)
+{
+    if      (address < 0x08004000) return FLASH_SECTOR_0;
+    else if (address < 0x08008000) return FLASH_SECTOR_1;
+    else if (address < 0x0800C000) return FLASH_SECTOR_2;
+    else if (address < 0x08010000) return FLASH_SECTOR_3;
+    else if (address < 0x08020000) return FLASH_SECTOR_4;
+    else if (address < 0x08040000) return FLASH_SECTOR_5;
+    else if (address < 0x08060000) return FLASH_SECTOR_6;
+    else if (address < 0x08080000) return FLASH_SECTOR_7;
+    else if (address < 0x080A0000) return FLASH_SECTOR_8;
+    else if (address < 0x080C0000) return FLASH_SECTOR_9;
+    else if (address < 0x080E0000) return FLASH_SECTOR_10;
+    else if (address < 0x08100000) return FLASH_SECTOR_11;
+
+    return 0xFFFFFFFFU;
+}
+
+/**
+ * @brief 初始化IAP升级状态，清零升级信息，并设置App起始地址和初始状态
+ * @param 无
+ * @return 无
+ */
 void IAP_Init(void)
 {
-    /* 将iap_info结构体所有字节清零 */
+    /* 清零IAP运行信息 */
     memset(&iap_info, 0, sizeof(iap_info));
+    /* 设置初始状态和App起始地址 */
     iap_info.state = IAP_STATE_IDLE;
     iap_info.app_address = 0x08008000;
 }
 
 /**
- * @brief: 固件升级开始命令
- * @details: 解析固件大小和CRC32校验值，擦除APP区域
- * @param: packet 指向IAP数据包结构体指针
+ * @brief 处理固件升级开始命令，解析固件大小和CRC32，检查固件范围，并擦除App占用的Flash区域
+ * @param packet 指向IAP数据包的指针
+ * @return 无
  */
 void IAP_HandleStartUpgrade(IAP_Packet_t *packet) 
 {
-    /* 数据格式 [注：这是传入的数据大小，固件总大小 4字节+ CRC32 4字节] */
+    /* data包含固件大小4字节和CRC32 4字节 */
     if (packet->len != 8) {
         IAP_SendResponse(CMD_START_UPGRADE, RESP_ERROR);
         return;
     }
-    /* 固件大小 */
+     /* 解析固件总大小 */
     iap_info.total_size = packet->data[0] | (packet->data[1] << 8) | 
                           (packet->data[2] << 16) | (packet->data[3] << 24);
     iap_info.crc32 = packet->data[4] | (packet->data[5] << 8) | 
                      (packet->data[6] << 16) | (packet->data[7] << 24);
 
-    /* 检查固件大小与范围是否正常 */
+    /* 检查固件大小 */
     if (iap_info.total_size == 0 || iap_info.total_size > 0x70000) {
         IAP_SendResponse(CMD_START_UPGRADE, RESP_ERROR);
         return;
@@ -165,7 +155,7 @@ void IAP_HandleStartUpgrade(IAP_Packet_t *packet)
 
     uint32_t address = iap_info.app_address;
     uint32_t end_address = address + iap_info.total_size;
-    // 定义Flash擦除结构体
+    /* 定义Flash擦除结构体 */
     FLASH_EraseInitTypeDef eraseInit;
     uint32_t sectorError = 0;
 
@@ -183,7 +173,6 @@ void IAP_HandleStartUpgrade(IAP_Packet_t *packet)
             return;
         }
 
-        // 移动到下一个扇区
         if (sector < 4) {
             address += 0x4000;  // 16KB扇区
         } else if (sector == 4) {
@@ -203,28 +192,33 @@ void IAP_HandleStartUpgrade(IAP_Packet_t *packet)
     IAP_SendResponse(CMD_START_UPGRADE, RESP_OK);
 }
 
-
+/**
+ * @brief 处理固件数据命令，检查数据包和接收状态，将固件数据写入Flash，并更新接收大小和写入地址。
+ * @param packet 指向IAP数据包的指针
+ * @return 无
+ */
 void IAP_HandleSendData(IAP_Packet_t *packet) {
+    /* 只有准备接收或正在接收状态才允许写入 */
     if (iap_info.state != IAP_STATE_READY && 
         iap_info.state != IAP_STATE_RECEIVING) {
         IAP_SendResponse(CMD_SEND_DATA, RESP_ERROR);
         return;
     }
 
-    // 检查数据长度
+    /* 检查数据长度 */
     if (packet->len == 0 || packet->len > MAX_DATA_SIZE) {
         IAP_SendResponse(CMD_SEND_DATA, RESP_ERROR);
         return;
     }
 
-    // 检查是否超出总大小
+    /* 检查累计接收长度是否超出固件总大小 */
     if (iap_info.received_size + packet->len > iap_info.total_size) {
         IAP_SendResponse(CMD_SEND_DATA, RESP_ERROR);
         return;
     }
 
     HAL_FLASH_Unlock();
-
+    /* 按32位写入Flash */
     for (uint32_t i = 0; i < packet->len; i += 4) {
         
         uint32_t word = 0xFFFFFFFFU;
@@ -238,16 +232,17 @@ void IAP_HandleSendData(IAP_Packet_t *packet) {
             IAP_SendResponse(CMD_SEND_DATA, RESP_FLASH_ERROR);
             return;
         }
+
         iap_info.write_address += 4;
     }
 
     HAL_FLASH_Lock();
 
-    // 更新接收状态
+    /* 更新接收状态 */
     iap_info.received_size += packet->len;
     iap_info.state = IAP_STATE_RECEIVING;
 
-    // 打印进度
+    /* 发送接收进度 */
     uint8_t progress = (iap_info.received_size * 100) / iap_info.total_size;
 
     char tx_buf[50];
@@ -256,58 +251,64 @@ void IAP_HandleSendData(IAP_Packet_t *packet) {
     IAP_SendResponse(CMD_SEND_DATA, RESP_OK);
 }
 
-// 处理结束升级命令
+/**
+ * @brief 处理固件升级结束命令，检查固件接收长度，并计算整个固件的CRC32，校验成功后，将升级状态设置为完成
+ * @param packet 指向IAP数据包的指针
+ * @return 无
+ */
 void IAP_HandleEndUpgrade(IAP_Packet_t *packet) {
+    /* 只有正在接收状态才允许结束升级 */
     if (iap_info.state != IAP_STATE_RECEIVING) {
         IAP_SendResponse(CMD_END_UPGRADE, RESP_ERROR);
         return;
     }
-
-    // 检查接收大小
+    /* 检查固件是否接收完整 */
     if (iap_info.received_size != iap_info.total_size) {
         IAP_SendResponse(CMD_END_UPGRADE, RESP_ERROR);
         return;
     }
-
     // 计算CRC32校验
     UART1_SendString("Verifying firmware...\r\n");
-
+    /* 计算已写入固件的CRC32 */
     uint32_t calculated_crc = CRC32_Calculate(
         (const uint8_t *)iap_info.app_address,
         iap_info.total_size
     );
-
+    /* 比较计算结果和上位机发送的CRC32 */
     if (calculated_crc != iap_info.crc32) {
-        //printf("CRC error: expected 0x%08X, got 0x%08X\r\n", 
-        //       iap_info.crc32, calculated_crc);
         iap_info.state = IAP_STATE_ERROR;
         IAP_SendResponse(CMD_END_UPGRADE, RESP_CRC_ERROR);
         return;
     }
-
-    // 升级成功
+    /* 固件校验成功 */
     iap_info.state = IAP_STATE_COMPLETE;
-    printf("Firmware upgrade complete!\r\n");
     IAP_SendResponse(CMD_END_UPGRADE, RESP_OK);
 }
 
-// 处理跳转到应用命令
+/**
+ * @brief 处理跳转到应用程序命令，只有固件升级完成并且CRC32校验成功后，才允许跳转到应用程序
+ * @param packet 指向接收到的数据包
+ * @return 无
+ */
 void IAP_HandleJumpToApp(IAP_Packet_t *packet) {
+    /* 只有固件校验成功后，才允许跳转 */
     if (iap_info.state != IAP_STATE_COMPLETE) {
         IAP_SendResponse(CMD_JUMP_TO_APP, RESP_ERROR);
         return;
     }
-
+    /* 通知上位机即将跳转 */
     IAP_SendResponse(CMD_JUMP_TO_APP, RESP_OK);
-
-    // 延时确保响应发送完成
+    /* 延时确保响应发送完成 */
     HAL_Delay(100);
-
-    // 跳转到应用程序
+    /* 跳转到应用程序 */
     JumpToApplication(iap_info.app_address);
 }
 
-// 数据包处理主函数
+/**
+ * @brief 处理接收到的IAP数据包，根据数据包中的命令字，将数据包分发给对应的处理函数
+ * @param packet 指向待处理的数据包
+ * @return 无
+ */
 void IAP_ProcessPacket(IAP_Packet_t *packet) {
     switch (packet->cmd) {
         case CMD_START_UPGRADE:

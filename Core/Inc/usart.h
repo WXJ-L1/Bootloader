@@ -34,14 +34,18 @@ extern "C" {
 
 extern UART_HandleTypeDef huart1;
 
+extern UART_HandleTypeDef huart3;
+
 /* USER CODE BEGIN Private defines */
 
 /* USER CODE END Private defines */
 
 void MX_USART1_UART_Init(void);
+void MX_USART3_UART_Init(void);
 
 /* USER CODE BEGIN Prototypes */
 void UART1_SendString(char *str);
+void UART3_SendString(char *str);
 HAL_StatusTypeDef UART1_SendByte(uint8_t data);
 uint8_t UART1_ReceiveByte(uint32_t timeout);
 uint16_t UART1_ReceiveBuffer(uint8_t *buffer, uint16_t len, uint32_t timeout);
