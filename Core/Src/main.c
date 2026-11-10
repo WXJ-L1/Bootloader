@@ -25,24 +25,27 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
-#include "flash.h"
 
 #include "bsp_esp8266.h"
 #include "bsp_firmware.h"
+#include "bsp_flash.h"
 #include "bsp_iap.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-#define KEY_PRESSED() HAL_GPIO_ReadPin(KEY_GPIO_Port, KEY_Pin) == GPIO_PIN_SET
+//#define KEY_PRESSED() HAL_GPIO_ReadPin(KEY_GPIO_Port, KEY_Pin) == GPIO_PIN_SET
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-uint8_t rx_data;
-/* 串口3DMA接收缓冲区 */
+/* 串口3 DMA接收缓冲区 */
 #define ESP_RX_SIZE 256
 uint8_t esp_rx_buffer[ESP_RX_SIZE];
+uint8_t rx_data;
+uint8_t need_upgrade = 0;
+
+int active_bank;
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -72,11 +75,19 @@ void JumpToApplication(uint32_t appAddress)
   const uint32_t sram_end = SRAM_BASE + (128U * 1024U);
 
   /* 查一下什么意思 */
-  if ((app_sp >= sram_start) && (app_sp <= sram_end) &&
+  uint32_t app_end = 0U;
+  if ((appAddress >= BANK_A_ADDRESS) &&
+      (appAddress <= BANK_B_ADDRESS)) {
+    app_end = appAddress + BANK_SIZE;
+  }
+
+  if ((app_end != 0U) &&
+      /* The initial MSP may legally point one past the last SRAM byte. */
+      (app_sp >= sram_start) && (app_sp <= sram_end) &&
       ((app_sp & 0x7U) == 0U) &&
       ((app_entry & 1U) != 0U) &&
-      ((app_entry & ~1U) >= APP_ADDRESS) &&
-      ((app_entry & ~1U) < (APP_ADDRESS + APP_SIZE)))
+      ((app_entry & ~1U) >= appAddress) &&
+      ((app_entry & ~1U) < app_end))
   {
     // 定义一个函数指针类型，用于指向应用程序的复位处理程序
     typedef void (*pFunction)(void);
@@ -113,80 +124,27 @@ void JumpToApplication(uint32_t appAddress)
 
 /* 检查升级标志 */
 uint8_t CheckUpgradeFlag(void) {
-    uint32_t flag = *(__IO uint32_t*)UPGRADE_FLAG_ADDRESS;
-    return (flag == UPGRADE_FLAG_VALUE);
+  // (__IO uint32_t *)把整数地址转换为指向 32 位数据的 volatile 指针
+  return (*(__IO uint32_t *)UPGRADE_FLAG_ADDRESS == UPGRADE_FLAG_VALUE) ? 1U : 0U;
 }
 
 /* 清除升级标志 */
 void ClearUpgradeFlag(void) {
-    HAL_FLASH_Unlock();
-    //HAL_FLASHEx_Erase(&eraseInit, &sectorError);
+    FLASH_EraseInitTypeDef erase_init;
+    uint32_t sector_error = 0U;
+
+    if (HAL_FLASH_Unlock() != HAL_OK) {
+        return;
+    }
+
+    erase_init.TypeErase = FLASH_TYPEERASE_SECTORS;
+    erase_init.Sector = UPGRADE_FLAG_SECTOR;
+    erase_init.NbSectors = 1U;
+    erase_init.VoltageRange = FLASH_VOLTAGE_RANGE_3;
+
+    (void)HAL_FLASHEx_Erase(&erase_init, &sector_error);
     HAL_FLASH_Lock();
 }
-
-// HAL_StatusTypeDef CopyFirmware(void)
-// {
-//   uint32_t src_addr = UPGRADE_START_ADDR;
-//   uint32_t size = UPGRADE_SIZE;
-  
-//   uint32_t dest_addr = APP_ADDRESS;
-
-//   FLASH_EraseInitTypeDef eraseInit = {0};
-//   uint32_t sectorError = 0xFFFFFFFFU;
-//   HAL_StatusTypeDef status = HAL_OK;
-
-//   HAL_FLASH_Unlock();
-//   // 配置擦除应用区
-//   eraseInit.TypeErase = FLASH_TYPEERASE_SECTORS;
-//   eraseInit.VoltageRange = FLASH_VOLTAGE_RANGE_3;
-//   eraseInit.Sector = FLASH_SECTOR_2;
-//   eraseInit.NbSectors = 6;  // 扇区2~7
-
-//   // 一次性擦除
-//   if (HAL_FLASHEx_Erase(&eraseInit, &sectorError) != HAL_OK)
-//   {
-//     UART1_SendString("Erase app area failed!\r\n");
-//     status = HAL_ERROR;
-//     goto cleanup;
-//   }
-
-//   // 按32位复制固件
-//   for (uint32_t i = 0; i < size; i += 4U)
-//   {
-//     uint32_t data;
-//     // 从升级区读取32位数据
-//     memcpy(&data, (const void *)(src_addr + i), sizeof(data));
-//     // 写入应用区
-//     if (HAL_FLASH_Program(
-//         FLASH_TYPEPROGRAM_WORD,
-//         dest_addr + i,
-//         data) != HAL_OK)
-//     {
-//       UART1_SendString("Write app area failed!\r\n");
-//       status = HAL_ERROR;
-//       goto cleanup;
-//     }
-
-//     // 每复制256字节翻转一次LED
-//     if ((i % 256U) == 0U)
-//     {
-//       HAL_GPIO_TogglePin(GPIOF, LED_R_Pin);
-//     }
-//   }
-//   cleanup:
-//     // 无论成功失败，都重新锁定Flash
-//     if (HAL_FLASH_Lock() != HAL_OK)
-//     {
-//         status = HAL_ERROR;
-//     }
-
-//     if (status == HAL_OK)
-//     {
-//         UART1_SendString("Firmware copy complete!\r\n");
-//     }
-//     return status;
-// }
-
 /* USER CODE END 0 */
 
 /**
@@ -221,92 +179,146 @@ int main(void)
   MX_DMA_Init();
   MX_USART1_UART_Init();
   MX_USART3_UART_Init();
+
   /* USER CODE BEGIN 2 */
   //HAL_UARTEx_ReceiveToIdle_DMA(&huart3,esp_rx_buffer,ESP_RX_SIZE);
   HAL_Delay(2000);
+
   //ESP8266_Init();
-
-  uint8_t need_upgrade = 0;
-  /* 按键检查是否需要升级 */
-  if (KEY_PRESSED())
-  {
-    need_upgrade = 1;
+  
+  // 待尝试启动，检查烧录的新Bank是否需要回滚
+  if (CheckRollbackNeeded()) {
+    UART1_SendString("Rollback needed, switching banks...\r\n");
+    // 执行回滚操作
+    if (PerformRollback() == 0) {
+      HAL_Delay(1000);
+      // 重新启动系统 
+      NVIC_SystemReset();
+    } 
+    else {
+      UART1_SendString("Rollback failed, entering recovery mode\r\n");
+      // 进入恢复模式
+      while (1) {
+        HAL_Delay(200);
+      }
+    }
   }
-
-  if(need_upgrade)
-  {
-    //ClearUpgradeFlag();
-    /* 初始化 IAP_Info_t */
+  
+  // APP请求升级 
+  if (CheckUpgradeFlag()) {
+    // 清除升级标志，防止重复升级
+    ClearUpgradeFlag();
+    // 进入 IAP 升级模式
     IAP_Init();
-    /* 串口中断接收自定义数据帧字节数据 */
+    // 启动串口接收中断
     HAL_UART_Receive_IT(&huart1, &rx_data, 1);
 
     uint32_t led_tick = HAL_GetTick();
-    while(1){
-      if (HAL_GetTick() - led_tick >= 500) {
+    while (1) {
+      if (HAL_GetTick() - led_tick >= 500U) {
         led_tick = HAL_GetTick();
         HAL_GPIO_TogglePin(GPIOF, LED_G_Pin);
       }
-
-      /* 主循环处理 IAP_Packet_t 数据包 */
-      if (rx_packet_ready)
-      {
+      // 处理接收到的数据包
+      if (rx_packet_ready) {
         IAP_Packet_t packet;
-        /* CRC校验数据包是否正确 */
-        if (IAP_ParsePacket(rx_buffer, rx_index, &packet)){
-          /* 根据命令分发任务状态机 
-           * [注：根据当前状态和接收到的事件，执行对应操作，并决定是否切换到下一个状态]
-           */
+        // 解析接收到的数据包
+        if (IAP_ParsePacket(rx_buffer, rx_index, &packet)) {
+          // 处理数据包
           IAP_ProcessPacket(&packet);
-        }
-        else{
+        } else {
           IAP_SendResponse(rx_buffer[1], RESP_CRC_ERROR);
         }
-        rx_index = 0;
-        rx_packet_ready = 0;
-      }
-
-      if(iap_info.state == IAP_STATE_COMPLETE)
-      {
-        HAL_Delay(1000);
-        JumpToApplication(APP_ADDRESS);
+        // 重置接收缓冲区索引和数据包就绪标志
+        rx_index = 0U;
+        rx_packet_ready = 0U;
       }
     }
   }
 
-  HAL_Delay(2000);
-  UART1_SendString("Checking application...\r\n");
-
-  
-
-  uint32_t app_sp = *(__IO uint32_t*)APP_ADDRESS;
-  uint32_t app_entry = *(volatile uint32_t *)(APP_ADDRESS + 4U);
-  // char buffer[64];
-  // snprintf(buffer, sizeof(buffer),
-  //        "App SP: 0x%08lX\r\n", (unsigned long)app_sp);
-  // UART1_SendString(buffer);
-  // snprintf(buffer, sizeof(buffer),
-  //        "App Reset: 0x%08lX\r\n", (unsigned long)app_reset);
-  // UART1_SendString(buffer);
-
-  uint32_t sram_start = 0x20000000U;
-  uint32_t sram_end = 0x20020000U;
-  if ((app_sp >= sram_start) && (app_sp <= sram_end) && ((app_sp & 0x7U) == 0U) && ((app_entry & 1U) != 0U) && ((app_entry & ~1U) >= APP_ADDRESS) && ((app_entry & ~1U) < (APP_ADDRESS + APP_SIZE))){
-    UART1_SendString("Valid application found\r\n");
-    HAL_Delay(500);
-    JumpToApplication(APP_ADDRESS);
-  } 
-  else {
-    UART1_SendString("No valid application, waiting for upgrade\r\n");
-    /* 进入IAP升级模式 */
+  active_bank = GetActiveBank();
+  if (active_bank < 0) {
+    UART1_SendString("No valid active bank, entering recovery mode\r\n");
     IAP_Init();
+    HAL_UART_Receive_IT(&huart1, &rx_data, 1);
     while (1) {
-      HAL_GPIO_TogglePin(GPIOF, LED_R_Pin);
-      HAL_Delay(500);
+      if (rx_packet_ready) {
+        IAP_Packet_t packet;
+        if (IAP_ParsePacket(rx_buffer, rx_index, &packet)) {
+          IAP_ProcessPacket(&packet);
+        } else {
+          IAP_SendResponse(rx_buffer[1], RESP_CRC_ERROR);
+        }
+        rx_index = 0U;
+        rx_packet_ready = 0U;
+      }
     }
   }
+  
+  // 记录启动尝试并验证活动分区
+  if (RecordBootAttempt((BankIndex_t)active_bank) != 0 ||
+      VerifyBankFirmware((BankIndex_t)active_bank) != 0) {
+    UART1_SendString("Active bank verification failed\r\n");
+    RecordBootFailure((BankIndex_t)active_bank);
 
+    if (PerformRollback() == 0) {
+      NVIC_SystemReset();
+    }
 
+    UART1_SendString("Entering recovery mode\r\n");
+    while (1) {
+      HAL_GPIO_TogglePin(GPIOF, LED_G_Pin);
+      HAL_Delay(200);
+    }
+  }
+  // 显示分区信息
+  BankInfo_t info;
+  ReadBankInfo((BankIndex_t)active_bank, &info);
+  // printf("Firmware version: %u.%u.%u\r\n",
+  //        info.version_major, info.version_minor, info.version_build);
+  // printf("Boot count: %u\r\n", info.boot_count);
+  // printf("Fail count: %u\r\n", info.fail_count);
+
+  // 延时后跳转
+  // printf("Jumping to application in 2 seconds...\r\n");
+  HAL_GPIO_TogglePin(GPIOF, LED_G_Pin);
+  HAL_Delay(2000);
+  HAL_GPIO_TogglePin(GPIOF, LED_G_Pin);
+  // 跳转到活动分区
+  //JumpToBank(active_bank);
+  JumpToApplication((active_bank == BANK_A) ?
+                    BANK_A_ADDRESS : BANK_B_ADDRESS);
+  //printf("Active bank: %c\r\n", 'A' + active_bank);
+  //   HAL_Delay(2000);
+  //   UART1_SendString("Checking application...\r\n");
+
+  //   uint32_t app_sp = *(__IO uint32_t*)APP_ADDRESS;
+  //   uint32_t app_entry = *(volatile uint32_t *)(APP_ADDRESS + 4U);
+  //   // char buffer[64];
+  //   // snprintf(buffer, sizeof(buffer),
+  //   //        "App SP: 0x%08lX\r\n", (unsigned long)app_sp);
+  //   // UART1_SendString(buffer);
+  //   // snprintf(buffer, sizeof(buffer),
+  //   //        "App Reset: 0x%08lX\r\n", (unsigned long)app_reset);
+  //   // UART1_SendString(buffer);
+
+  //   uint32_t sram_start = 0x20000000U;
+  //   uint32_t sram_end = 0x20020000U;
+  //   if ((app_sp >= sram_start) && (app_sp <= sram_end) && ((app_sp & 0x7U) == 0U) && ((app_entry & 1U) != 0U) && ((app_entry & ~1U) >= APP_ADDRESS) && ((app_entry & ~1U) < (APP_ADDRESS + APP_SIZE))){
+  //     UART1_SendString("Valid application found\r\n");
+  //     HAL_Delay(500);
+  //     JumpToApplication(APP_ADDRESS);
+  //   } 
+  //   else {
+  //     UART1_SendString("No valid application, waiting for upgrade\r\n");
+  //     /* 进入IAP升级模式 */
+  //     IAP_Init();
+  //     while (1) {
+  //       HAL_GPIO_TogglePin(GPIOF, LED_R_Pin);
+  //       HAL_Delay(500);
+  //     }
+  //   }
+  // }
   /* USER CODE END 2 */
 
   /* Infinite loop */

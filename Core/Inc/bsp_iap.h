@@ -8,7 +8,7 @@ extern "C" {
 #include <stdint.h>
 
 #include "bsp_firmware.h"
-
+#include "bsp_flash.h"
 /* IAP 状态定义 */
 typedef enum {
     IAP_STATE_IDLE = 0,      // 空闲状态
@@ -22,8 +22,10 @@ typedef enum {
 /* IAP 信息结构 */
 typedef struct {
     IAP_State_t state;           // 当前状态
-    uint32_t app_address;        // 应用程序地址
-    uint32_t app_size;           // 应用程序大小
+    BankIndex_t target_bank;     // 当前升级目标：BANK_A或BANK_B
+    uint32_t target_address;    // 目标Bank起始地址
+    // uint32_t app_address;        // 应用程序地址
+    // uint32_t app_size;           // 应用程序大小
     uint32_t received_size;      // 已接收大小
     uint32_t total_size;         // 总大小
     uint32_t crc32;              // 固件CRC32
@@ -34,6 +36,8 @@ extern IAP_Info_t iap_info;
 extern volatile uint8_t rx_packet_ready;
 
 void IAP_Init(void);
+uint32_t FLASH_GetSector(uint32_t address);
+uint32_t CRC32_Calculate(const uint8_t *data, uint32_t length);
 void IAP_ProcessPacket(IAP_Packet_t *packet);
 
 #ifdef __cplusplus

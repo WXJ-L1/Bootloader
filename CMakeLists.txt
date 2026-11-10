@@ -39,6 +39,8 @@ add_executable(${CMAKE_PROJECT_NAME}
     Core/Inc/bsp_iap.h
     Core/Src/bsp_esp8266.c
     Core/Inc/bsp_esp8266.h
+    Core/Src/bsp_flash.c
+    Core/Inc/bsp_flash.h
     )
 
 # Add STM32CubeMX generated sources

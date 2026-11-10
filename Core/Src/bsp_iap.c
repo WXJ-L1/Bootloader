@@ -7,6 +7,7 @@
 #include "stm32f4xx_hal.h"
 
 #include "bsp_firmware.h"
+#include "bsp_flash.h"
 #include "bsp_iap.h"
 
 IAP_Info_t iap_info;
@@ -122,7 +123,10 @@ void IAP_Init(void)
     memset(&iap_info, 0, sizeof(iap_info));
     /* 设置初始状态和App起始地址 */
     iap_info.state = IAP_STATE_IDLE;
-    iap_info.app_address = 0x08008000;
+    // AB 区不能再固定 APP 地址
+    //iap_info.app_address = 0x08008000;
+    iap_info.target_bank = BANK_A;
+    iap_info.target_address = 0;
 }
 
 /**
@@ -132,119 +136,84 @@ void IAP_Init(void)
  */
 void IAP_HandleStartUpgrade(IAP_Packet_t *packet) 
 {
-    /* data包含固件大小4字节和CRC32 4字节 */
+    // data包含固件大小4字节和CRC32 4字节
     if (packet->len != 8) {
         IAP_SendResponse(CMD_START_UPGRADE, RESP_ERROR);
         return;
     }
-     /* 解析固件总大小 */
-    iap_info.total_size = packet->data[0] | (packet->data[1] << 8) | 
-                          (packet->data[2] << 16) | (packet->data[3] << 24);
-    iap_info.crc32 = packet->data[4] | (packet->data[5] << 8) | 
-                     (packet->data[6] << 16) | (packet->data[7] << 24);
 
-    /* 检查固件大小 */
-    if (iap_info.total_size == 0 || iap_info.total_size > 0x70000) {
+    uint32_t firmware_size =
+        ((uint32_t)packet->data[0])        |
+        ((uint32_t)packet->data[1] << 8U)  |
+        ((uint32_t)packet->data[2] << 16U) |
+        ((uint32_t)packet->data[3] << 24U);
+
+    uint32_t firmware_crc32 =
+        ((uint32_t)packet->data[4])        |
+        ((uint32_t)packet->data[5] << 8U)  |
+        ((uint32_t)packet->data[6] << 16U) |
+        ((uint32_t)packet->data[7] << 24U);
+
+    if (firmware_size == 0U ||
+        firmware_size > BANK_SIZE) {
         IAP_SendResponse(CMD_START_UPGRADE, RESP_ERROR);
         return;
     }
-    /* 开始擦除Flash中App区域 */
-    UART1_SendString("Erasing flash...\r\n");
 
-    HAL_FLASH_Unlock();
-
-    uint32_t address = iap_info.app_address;
-    uint32_t end_address = address + iap_info.total_size;
-    /* 定义Flash擦除结构体 */
-    FLASH_EraseInitTypeDef eraseInit;
-    uint32_t sectorError = 0;
-
-    while (address < end_address) {
-        uint32_t sector = FLASH_GetSector(address);
-
-        eraseInit.TypeErase = FLASH_TYPEERASE_SECTORS;
-        eraseInit.VoltageRange = FLASH_VOLTAGE_RANGE_3;
-        eraseInit.Sector = sector;
-        eraseInit.NbSectors = 1;
-
-        if (HAL_FLASHEx_Erase(&eraseInit, &sectorError) != HAL_OK) {
-            HAL_FLASH_Lock();
-            IAP_SendResponse(CMD_START_UPGRADE, RESP_FLASH_ERROR);
-            return;
-        }
-
-        if (sector < 4) {
-            address += 0x4000;  // 16KB扇区
-        } else if (sector == 4) {
-            address += 0x10000;  // 64KB扇区
-        } else {
-            address += 0x20000;  // 128KB扇区
-        }
+    if (DualBank_StartUpgrade(
+            firmware_size,
+            firmware_crc32,
+            0U,
+            0U,
+            0U) != 0) {
+        IAP_SendResponse(CMD_START_UPGRADE, RESP_FLASH_ERROR);
+        return;
     }
-
-    HAL_FLASH_Lock();
-
-    iap_info.received_size = 0;
-    iap_info.write_address = iap_info.app_address;
-    iap_info.state = IAP_STATE_READY;
 
     UART1_SendString("Ready to receive firmware\r\n");
     IAP_SendResponse(CMD_START_UPGRADE, RESP_OK);
 }
 
 /**
- * @brief 处理固件数据命令，检查数据包和接收状态，将固件数据写入Flash，并更新接收大小和写入地址。
+ * @brief 处理固件数据命令，检查数据包和接收状态，将固件数据写入Flash，并更新接收大小和写入地址
  * @param packet 指向IAP数据包的指针
  * @return 无
  */
 void IAP_HandleSendData(IAP_Packet_t *packet) {
-    /* 只有准备接收或正在接收状态才允许写入 */
+    // 只有准备接收或正在接收状态才允许写入
     if (iap_info.state != IAP_STATE_READY && 
         iap_info.state != IAP_STATE_RECEIVING) {
         IAP_SendResponse(CMD_SEND_DATA, RESP_ERROR);
         return;
     }
-
-    /* 检查数据长度 */
+    // 检查数据长度
     if (packet->len == 0 || packet->len > MAX_DATA_SIZE) {
         IAP_SendResponse(CMD_SEND_DATA, RESP_ERROR);
         return;
     }
-
-    /* 检查累计接收长度是否超出固件总大小 */
+    // 检查累计接收长度是否超出固件总大小
     if (iap_info.received_size + packet->len > iap_info.total_size) {
         IAP_SendResponse(CMD_SEND_DATA, RESP_ERROR);
         return;
     }
 
-    HAL_FLASH_Unlock();
-    /* 按32位写入Flash */
-    for (uint32_t i = 0; i < packet->len; i += 4) {
-        
-        uint32_t word = 0xFFFFFFFFU;
-        uint32_t remaining = packet->len - i;
-        uint32_t copy_len = remaining >= 4 ? 4 : remaining;
-
-        memcpy(&word, &packet->data[i], copy_len);
-
-        if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD,iap_info.write_address,word) != HAL_OK) {
-            HAL_FLASH_Lock();
-            IAP_SendResponse(CMD_SEND_DATA, RESP_FLASH_ERROR);
-            return;
-        }
-
-        iap_info.write_address += 4;
+    uint32_t is_last_packet = (iap_info.received_size + packet->len == iap_info.total_size);
+    if (!is_last_packet && ((packet->len % 4U) != 0U)) {
+        IAP_SendResponse(CMD_SEND_DATA, RESP_ERROR);
+        return;
     }
 
-    HAL_FLASH_Lock();
-
-    /* 更新接收状态 */
+    if (DualBank_WriteFirmware(iap_info.received_size, packet->data, packet->len) != 0) {
+        iap_info.state = IAP_STATE_ERROR;
+        IAP_SendResponse(CMD_SEND_DATA, RESP_FLASH_ERROR);
+        return;
+    }
+    // 更新接收状态
     iap_info.received_size += packet->len;
+    iap_info.write_address = iap_info.target_address + iap_info.received_size;
     iap_info.state = IAP_STATE_RECEIVING;
-
-    /* 发送接收进度 */
+    // 发送接收进度
     uint8_t progress = (iap_info.received_size * 100) / iap_info.total_size;
-
     char tx_buf[50];
     snprintf(tx_buf, sizeof(tx_buf), "Progress: %u%%\r\n", progress);
     UART1_SendString(tx_buf);
@@ -257,30 +226,23 @@ void IAP_HandleSendData(IAP_Packet_t *packet) {
  * @return 无
  */
 void IAP_HandleEndUpgrade(IAP_Packet_t *packet) {
-    /* 只有正在接收状态才允许结束升级 */
+    (void)packet;
+    // 必须已经接收过数据
     if (iap_info.state != IAP_STATE_RECEIVING) {
         IAP_SendResponse(CMD_END_UPGRADE, RESP_ERROR);
         return;
     }
-    /* 检查固件是否接收完整 */
+    // 检查固件是否接收完整
     if (iap_info.received_size != iap_info.total_size) {
         IAP_SendResponse(CMD_END_UPGRADE, RESP_ERROR);
         return;
     }
-    // 计算CRC32校验
     UART1_SendString("Verifying firmware...\r\n");
-    /* 计算已写入固件的CRC32 */
-    uint32_t calculated_crc = CRC32_Calculate(
-        (const uint8_t *)iap_info.app_address,
-        iap_info.total_size
-    );
-    /* 比较计算结果和上位机发送的CRC32 */
-    if (calculated_crc != iap_info.crc32) {
+    if (DualBank_FinishUpgrade() != 0) {
         iap_info.state = IAP_STATE_ERROR;
-        IAP_SendResponse(CMD_END_UPGRADE, RESP_CRC_ERROR);
+        IAP_SendResponse(CMD_END_UPGRADE, RESP_ERROR);
         return;
     }
-    /* 固件校验成功 */
     iap_info.state = IAP_STATE_COMPLETE;
     IAP_SendResponse(CMD_END_UPGRADE, RESP_OK);
 }
@@ -291,17 +253,25 @@ void IAP_HandleEndUpgrade(IAP_Packet_t *packet) {
  * @return 无
  */
 void IAP_HandleJumpToApp(IAP_Packet_t *packet) {
-    /* 只有固件校验成功后，才允许跳转 */
+    // 只有固件校验成功后，才允许跳转
     if (iap_info.state != IAP_STATE_COMPLETE) {
         IAP_SendResponse(CMD_JUMP_TO_APP, RESP_ERROR);
         return;
     }
-    /* 通知上位机即将跳转 */
+    // 下载并校验成功后，交给Bootloader在复位后尝试启动该Bank
+    if (UpdateBankState(
+            iap_info.target_bank,
+            BANK_STATE_PENDING) != 0) {
+        IAP_SendResponse(CMD_JUMP_TO_APP, RESP_ERROR);
+        return;
+    }
+    // 通知上位机即将跳转
     IAP_SendResponse(CMD_JUMP_TO_APP, RESP_OK);
-    /* 延时确保响应发送完成 */
+    // 延时确保响应发送完成
     HAL_Delay(100);
-    /* 跳转到应用程序 */
-    JumpToApplication(iap_info.app_address);
+    // 跳转到应用程序
+    NVIC_SystemReset();
+    //JumpToApplication(iap_info.app_address);
 }
 
 /**
@@ -328,7 +298,7 @@ void IAP_ProcessPacket(IAP_Packet_t *packet) {
             break;
 
         case CMD_GET_VERSION:
-            /* 返回Bootloader版本信息 未完成*/
+            // 返回Bootloader版本信息
             IAP_SendResponse(CMD_GET_VERSION, RESP_OK);
             break;
 
